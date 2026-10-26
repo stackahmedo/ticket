@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+*.log
+.DS_Store
+.idea/
+.vscode/
+coverage/
+*.pem
+*.key

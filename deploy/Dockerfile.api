@@ -1,0 +1,11 @@
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+RUN go mod tidy && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /eticket ./cmd/server
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
+COPY --from=build /eticket /usr/local/bin/eticket
+USER app
+ENTRYPOINT ["/usr/local/bin/eticket"]

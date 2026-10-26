@@ -1,0 +1,37 @@
+# EC2 Tokyo Server 2. No public security-group ingress to Kafka or Redis.
+# Staging-only PLAINTEXT Kafka and password-only Redis, add TLS/SASL for production.
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    hostname: kafka
+    restart: unless-stopped
+    ports:
+      - "${SERVER2_PRIVATE_IP}:9092:9092"
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?Set Kafka cluster ID}
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,PRIVATE://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,PRIVATE://${SERVER2_PRIVATE_IP}:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,PRIVATE:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set Redis password}
+    command: ["sh","-c","exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    ports:
+      - "${SERVER2_PRIVATE_IP}:6379:6379"
+    volumes: ["redis-data:/data"]
+volumes:
+  kafka-data:
+  redis-data:
