@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -48,6 +49,10 @@ func (a *application) routes() http.Handler {
 	mux.Handle("GET /v1/me/orders", a.auth(http.HandlerFunc(a.myOrders)))
 	mux.Handle("GET /v1/me/notifications", a.auth(http.HandlerFunc(a.myNotifications)))
 	mux.Handle("POST /v1/checkins", a.auth(http.HandlerFunc(a.checkIn)))
+	mux.Handle("GET /v1/admin/stats", a.adminAuth(http.HandlerFunc(a.adminStats)))
+	mux.Handle("GET /v1/admin/orders", a.adminAuth(http.HandlerFunc(a.adminOrders)))
+	mux.Handle("GET /v1/admin/tickets", a.adminAuth(http.HandlerFunc(a.adminTickets)))
+	mux.Handle("POST /v1/admin/events", a.adminAuth(http.HandlerFunc(a.adminCreateEvent)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -292,4 +297,153 @@ func (a *application) myNotifications(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, result)
 }
 
+func (a *application) adminAuth(next http.Handler) http.Handler {
+	return a.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		who := user(r)
+		if who.Role != "admin" && who.Role != "organizer" {
+			fail(w, 403, "admin or organizer permission required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
+func (a *application) adminStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var stats struct {
+		TotalRevenueYen    int64 `json:"total_revenue_yen"`
+		TotalOrders        int   `json:"total_orders"`
+		TotalTickets       int   `json:"total_tickets"`
+		UsedTickets        int   `json:"used_tickets"`
+		ActiveReservations int   `json:"active_reservations"`
+		TotalUsers         int   `json:"total_users"`
+		PendingOutbox      int   `json:"pending_outbox"`
+	}
+	_ = a.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_yen), 0) FROM orders WHERE status='confirmed'`).Scan(&stats.TotalRevenueYen)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM orders`).Scan(&stats.TotalOrders)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM tickets`).Scan(&stats.TotalTickets)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM tickets WHERE status='used'`).Scan(&stats.UsedTickets)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM reservations WHERE status='active' AND expires_at > now()`).Scan(&stats.ActiveReservations)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&stats.TotalUsers)
+	_ = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE published_at IS NULL`).Scan(&stats.PendingOutbox)
+	respond(w, 200, stats)
+}
+
+func (a *application) adminOrders(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.db.Query(r.Context(), `
+		SELECT o.id, u.email, o.amount_yen, o.status, o.created_at, COUNT(t.id) as ticket_count
+		FROM orders o
+		JOIN users u ON u.id = o.user_id
+		LEFT JOIN tickets t ON t.order_id = o.id
+		GROUP BY o.id, u.email, o.amount_yen, o.status, o.created_at
+		ORDER BY o.created_at DESC
+		LIMIT 50
+	`)
+	if err != nil {
+		fail(w, 500, "query failed")
+		return
+	}
+	defer rows.Close()
+	type adminOrder struct {
+		ID            string    `json:"id"`
+		CustomerEmail string    `json:"customer_email"`
+		AmountYen     int64     `json:"amount_yen"`
+		Status        string    `json:"status"`
+		CreatedAt     time.Time `json:"created_at"`
+		TicketCount   int       `json:"ticket_count"`
+	}
+	list := []adminOrder{}
+	for rows.Next() {
+		var o adminOrder
+		if err := rows.Scan(&o.ID, &o.CustomerEmail, &o.AmountYen, &o.Status, &o.CreatedAt, &o.TicketCount); err == nil {
+			list = append(list, o)
+		}
+	}
+	respond(w, 200, list)
+}
+
+func (a *application) adminTickets(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.db.Query(r.Context(), `
+		SELECT t.id, t.order_id, e.title, s.section, s.row_label, s.seat_number, t.status, t.created_at, t.used_at
+		FROM tickets t
+		JOIN event_seats es ON es.id = t.event_seat_id
+		JOIN events e ON e.id = es.event_id
+		JOIN seats s ON s.id = es.seat_id
+		ORDER BY t.created_at DESC
+		LIMIT 50
+	`)
+	if err != nil {
+		fail(w, 500, "query failed")
+		return
+	}
+	defer rows.Close()
+	type ticketRow struct {
+		ID         string     `json:"id"`
+		OrderID    string     `json:"order_id"`
+		EventTitle string     `json:"event_title"`
+		Section    string     `json:"section"`
+		Row        string     `json:"row"`
+		Number     int        `json:"number"`
+		Status     string     `json:"status"`
+		CreatedAt  time.Time  `json:"created_at"`
+		UsedAt     *time.Time `json:"used_at"`
+	}
+	list := []ticketRow{}
+	for rows.Next() {
+		var t ticketRow
+		if err := rows.Scan(&t.ID, &t.OrderID, &t.EventTitle, &t.Section, &t.Row, &t.Number, &t.Status, &t.CreatedAt, &t.UsedAt); err == nil {
+			list = append(list, t)
+		}
+	}
+	respond(w, 200, list)
+}
+
+func (a *application) adminCreateEvent(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Title     string `json:"title"`
+		PriceYen  int64  `json:"price_yen"`
+		DaysAhead int    `json:"days_ahead"`
+		SeatCount int    `json:"seat_count"`
+	}
+	if body(r, &in) != nil || strings.TrimSpace(in.Title) == "" {
+		fail(w, 400, "valid event title required")
+		return
+	}
+	if in.PriceYen <= 0 {
+		in.PriceYen = 3000
+	}
+	if in.DaysAhead <= 0 {
+		in.DaysAhead = 14
+	}
+	if in.SeatCount <= 0 || in.SeatCount > 24 {
+		in.SeatCount = 12
+	}
+	ctx := r.Context()
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		fail(w, 500, "transaction error")
+		return
+	}
+	defer tx.Rollback(ctx)
+	var eventID string
+	venueID := "20000000-0000-4000-8000-000000000001"
+	organizerID := user(r).ID
+	startsAt := time.Now().Add(time.Duration(in.DaysAhead) * 24 * time.Hour)
+	err = tx.QueryRow(ctx, `INSERT INTO events(venue_id, organizer_id, title, starts_at, status) VALUES($1, $2, $3, $4, 'published') RETURNING id`, venueID, organizerID, in.Title, startsAt).Scan(&eventID)
+	if err != nil {
+		fail(w, 500, "could not create event")
+		return
+	}
+	for i := 1; i <= in.SeatCount; i++ {
+		seatID := fmt.Sprintf("40000000-0000-4000-8000-%012d", i)
+		_, _ = tx.Exec(ctx, `INSERT INTO event_seats(event_id, seat_id, price_yen) VALUES($1, $2, $3) ON CONFLICT DO NOTHING`, eventID, seatID, in.PriceYen)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		fail(w, 500, "commit failed")
+		return
+	}
+	respond(w, 201, map[string]any{"event_id": eventID, "title": in.Title, "seats_created": in.SeatCount})
+}
+
 var _ = pgx.ErrNoRows
+

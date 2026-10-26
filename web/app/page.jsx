@@ -48,6 +48,18 @@ export default function Page() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
+  // Admin Panel State
+  const [adminStats, setAdminStats] = useState(null);
+  const [adminOrders, setAdminOrders] = useState([]);
+  const [adminTickets, setAdminTickets] = useState([]);
+  const [adminSubTab, setAdminSubTab] = useState('overview'); // overview | events | orders | tickets | cluster
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newEventTitle, setNewEventTitle] = useState('');
+  const [newEventPrice, setNewEventPrice] = useState(4500);
+  const [newEventDays, setNewEventDays] = useState(14);
+  const [newEventSeats, setNewEventSeats] = useState(12);
+
   // Restore session from localStorage on initial render
   useEffect(() => {
     try {
@@ -99,6 +111,32 @@ export default function Page() {
   useEffect(() => {
     loadUserData();
   }, [loadUserData]);
+
+  // Load executive admin data
+  const loadAdminData = useCallback(async () => {
+    if (!token) return;
+    setAdminLoading(true);
+    try {
+      const [statsData, ordersData, ticketsData] = await Promise.all([
+        call('/v1/admin/stats', { token }).catch(() => null),
+        call('/v1/admin/orders', { token }).catch(() => []),
+        call('/v1/admin/tickets', { token }).catch(() => []),
+      ]);
+      if (statsData) setAdminStats(statsData);
+      setAdminOrders(ordersData || []);
+      setAdminTickets(ticketsData || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAdminLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (activeTab === 'admin' && token && (userRole === 'admin' || userRole === 'organizer')) {
+      loadAdminData();
+    }
+  }, [activeTab, token, userRole, loadAdminData]);
 
   // Hold timer countdown
   useEffect(() => {
@@ -170,6 +208,64 @@ export default function Page() {
     localStorage.removeItem('eticket_email');
     localStorage.removeItem('eticket_role');
     localStorage.removeItem('eticket_id');
+  }
+
+  async function quickAdminLogin() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await call('/v1/auth/login', {
+        method: 'POST',
+        body: { email: 'admin@tozaitech.com', password: 'AdminPass1234!' },
+      });
+      setToken(data.token);
+      setUserEmail('admin@tozaitech.com');
+      setUserRole(data.role || 'admin');
+      setUserId(data.user_id || '');
+      localStorage.setItem('eticket_token', data.token);
+      localStorage.setItem('eticket_email', 'admin@tozaitech.com');
+      localStorage.setItem('eticket_role', data.role || 'admin');
+      localStorage.setItem('eticket_id', data.user_id || '');
+      setActiveTab('admin');
+      setSuccess('Logged in as Administrator (admin@tozaitech.com)!');
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateEvent(e) {
+    e.preventDefault();
+    if (!newEventTitle.trim()) {
+      setError('Event title is required');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const res = await call('/v1/admin/events', {
+        method: 'POST',
+        token,
+        body: {
+          title: newEventTitle.trim(),
+          price_yen: Number(newEventPrice),
+          days_ahead: Number(newEventDays),
+          seat_count: Number(newEventSeats),
+        },
+      });
+      setSuccess(`Event "${newEventTitle}" successfully published with ${res.seats_created} seats!`);
+      setTimeout(() => setSuccess(''), 5000);
+      setNewEventTitle('');
+      setShowCreateModal(false);
+      await refreshEvents();
+      await loadAdminData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function toggleSeat(seatId) {
@@ -294,6 +390,11 @@ export default function Page() {
             <span className="pulse-dot" />
             <span>AWS Tokyo • 2-Node Cluster</span>
           </div>
+          {(userRole === 'admin' || userRole === 'organizer') && (
+            <div className="system-pill" style={{ borderColor: 'rgba(99, 102, 241, 0.4)', color: '#a5b4fc', background: 'rgba(99, 102, 241, 0.1)' }}>
+              <span>🛡️ Admin Operator</span>
+            </div>
+          )}
           {token && (
             <button className="btn-secondary" onClick={signOut}>
               Sign Out
@@ -367,6 +468,20 @@ export default function Page() {
             </button>
           </>
         )}
+
+        <button
+          className={`view-tab ${activeTab === 'admin' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('admin');
+            if (token && (userRole === 'admin' || userRole === 'organizer')) {
+              loadAdminData();
+            }
+          }}
+          style={activeTab === 'admin' ? { borderColor: 'var(--indigo)' } : {}}
+        >
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Admin Portal {(userRole === 'admin' || userRole === 'organizer') && <span className="badge-count" style={{ background: 'var(--indigo)' }}>STAFF</span>}
+        </button>
       </nav>
 
       {/* Floating Alerts */}
@@ -649,6 +764,16 @@ export default function Page() {
                   <button className="btn-primary" style={{ width: '100%' }} disabled={busy}>
                     {busy ? 'Authenticating…' : authMode === 'login' ? 'Sign In →' : 'Create Account →'}
                   </button>
+
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ width: '100%', marginTop: '10px', borderColor: 'rgba(99, 102, 241, 0.4)', color: '#a5b4fc', fontSize: '13px' }}
+                    onClick={quickAdminLogin}
+                    disabled={busy}
+                  >
+                    ⚡ Demo Admin Login (admin@tozaitech.com)
+                  </button>
                 </form>
               ) : (
                 <div>
@@ -660,6 +785,17 @@ export default function Page() {
                     <br />
                     Session is saved to your browser so you stay logged in.
                   </p>
+
+                  {(userRole === 'admin' || userRole === 'organizer') && (
+                    <button
+                      className="btn-primary"
+                      style={{ width: '100%', marginBottom: '10px', background: 'linear-gradient(135deg, var(--indigo), #8b5cf6)' }}
+                      onClick={() => { setActiveTab('admin'); loadAdminData(); }}
+                    >
+                      🛡️ Open Admin Console
+                    </button>
+                  )}
+
                   <button className="btn-secondary" style={{ width: '100%' }} onClick={signOut}>
                     Sign Out
                   </button>
@@ -779,6 +915,574 @@ export default function Page() {
             </div>
           )}
         </section>
+      )}
+
+      {/* TAB 5: Comprehensive Admin Panel */}
+      {activeTab === 'admin' && (
+        <div>
+          {/* If not logged in as admin or organizer, show security login gateway */}
+          {!(token && (userRole === 'admin' || userRole === 'organizer')) ? (
+            <section className="glass-panel" style={{ maxWidth: '580px', margin: '40px auto', textAlign: 'center', padding: '40px 32px' }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '18px', background: 'linear-gradient(135deg, var(--indigo), var(--emerald))', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', boxShadow: '0 0 30px var(--indigo-glow)' }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+              </div>
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '26px', fontWeight: '800', marginBottom: '8px' }}>
+                Administrator Gateway
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginBottom: '28px' }}>
+                Access the distributed cluster KPIs, global customer orders, real-time ticket audits, and live event management.
+              </p>
+
+              <button
+                className="btn-primary"
+                style={{ width: '100%', padding: '14px', fontSize: '15px', background: 'linear-gradient(135deg, var(--indigo), #8b5cf6)', marginBottom: '16px' }}
+                onClick={quickAdminLogin}
+                disabled={busy}
+              >
+                {busy ? 'Authenticating…' : '⚡ Sign In as System Administrator (admin@tozaitech.com)'}
+              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '20px 0', color: 'var(--text-dim)', fontSize: '12px' }}>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                <span>OR SIGN IN WITH CUSTOM CREDENTIALS</span>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+              </div>
+
+              <form onSubmit={authenticate}>
+                <div className="form-group" style={{ textAlign: 'left' }}>
+                  <label>Operator Email</label>
+                  <input
+                    type="email"
+                    required
+                    className="form-input"
+                    placeholder="admin@tozaitech.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ textAlign: 'left' }}>
+                  <label>Password</label>
+                  <input
+                    type="password"
+                    required
+                    className="form-input"
+                    placeholder="••••••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                <button className="btn-secondary" style={{ width: '100%' }} disabled={busy}>
+                  {busy ? 'Verifying…' : 'Authenticate with Credentials →'}
+                </button>
+              </form>
+            </section>
+          ) : (
+            /* Logged In Administrator View */
+            <section className="glass-panel">
+              {/* Admin Top Header */}
+              <div className="admin-header">
+                <div className="admin-title-group">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <h2>Operator Console</h2>
+                    <span className="status-tag tag-active">CLUSTER ACTIVE</span>
+                  </div>
+                  <p>
+                    Session: <strong style={{ color: 'var(--text-main)' }}>{userEmail}</strong> • Role: <strong style={{ color: 'var(--emerald-light)', textTransform: 'uppercase' }}>{userRole}</strong> • PostgreSQL + Kafka Dual-Engine
+                  </p>
+                </div>
+
+                <div className="admin-actions">
+                  <button
+                    className="btn-primary"
+                    onClick={() => setShowCreateModal(!showCreateModal)}
+                  >
+                    {showCreateModal ? '✕ Close Form' : '+ Create Event'}
+                  </button>
+                  <button className="btn-secondary" onClick={loadAdminData} disabled={adminLoading}>
+                    {adminLoading ? '↻ Refreshing…' : '↻ Refresh'}
+                  </button>
+                  <button className="btn-secondary" onClick={() => setActiveTab('events')}>
+                    Customer View →
+                  </button>
+                </div>
+              </div>
+
+              {/* Collapsible Fast Event Creator */}
+              {showCreateModal && (
+                <div className="admin-create-box">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '700' }}>Publish New Live Event</h3>
+                    <span className="system-pill">INSTANT PROVISIONING</span>
+                  </div>
+                  <form onSubmit={handleCreateEvent}>
+                    <div className="admin-form-grid">
+                      <div className="form-group">
+                        <label>Event Title</label>
+                        <input
+                          type="text"
+                          required
+                          className="form-input"
+                          placeholder="e.g. Tokyo Neon Music Festival 2026"
+                          value={newEventTitle}
+                          onChange={(e) => setNewEventTitle(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Ticket Price (¥)</label>
+                        <input
+                          type="number"
+                          required
+                          min={500}
+                          step={100}
+                          className="form-input"
+                          placeholder="4500"
+                          value={newEventPrice}
+                          onChange={(e) => setNewEventPrice(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Days Ahead</label>
+                        <input
+                          type="number"
+                          required
+                          min={1}
+                          max={365}
+                          className="form-input"
+                          placeholder="14"
+                          value={newEventDays}
+                          onChange={(e) => setNewEventDays(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Seat Capacity</label>
+                        <select
+                          className="form-input"
+                          value={newEventSeats}
+                          onChange={(e) => setNewEventSeats(Number(e.target.value))}
+                        >
+                          <option value={12}>12 Seats (Standard Section A)</option>
+                          <option value={24}>24 Seats (Full Hall)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                      <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)}>
+                        Cancel
+                      </button>
+                      <button className="btn-primary" disabled={busy}>
+                        {busy ? 'Publishing…' : 'Publish Event to Cluster →'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Subnavigation Bar */}
+              <div className="admin-subnav">
+                <button
+                  className={`admin-subnav-btn ${adminSubTab === 'overview' ? 'active' : ''}`}
+                  onClick={() => setAdminSubTab('overview')}
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+                  Overview & Metrics
+                </button>
+                <button
+                  className={`admin-subnav-btn ${adminSubTab === 'events' ? 'active' : ''}`}
+                  onClick={() => setAdminSubTab('events')}
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                  Event Catalog ({events.length})
+                </button>
+                <button
+                  className={`admin-subnav-btn ${adminSubTab === 'orders' ? 'active' : ''}`}
+                  onClick={() => setAdminSubTab('orders')}
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+                  Global Orders ({adminOrders.length})
+                </button>
+                <button
+                  className={`admin-subnav-btn ${adminSubTab === 'tickets' ? 'active' : ''}`}
+                  onClick={() => setAdminSubTab('tickets')}
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/></svg>
+                  Issued Tickets ({adminTickets.length})
+                </button>
+                <button
+                  className={`admin-subnav-btn ${adminSubTab === 'cluster' ? 'active' : ''}`}
+                  onClick={() => setAdminSubTab('cluster')}
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+                  Cluster Topology
+                </button>
+              </div>
+
+              {/* SUBTAB 1: Overview & Metrics */}
+              {adminSubTab === 'overview' && (
+                <div>
+                  <div className="kpi-grid">
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Total Revenue</span>
+                        <div className="kpi-icon emerald">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val" style={{ color: 'var(--emerald-light)' }}>
+                        ¥{(adminStats?.total_revenue_yen || 0).toLocaleString()}
+                      </div>
+                      <div className="kpi-sub">Confirmed settled orders</div>
+                    </div>
+
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Total Orders</span>
+                        <div className="kpi-icon">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val">{adminStats?.total_orders || 0}</div>
+                      <div className="kpi-sub">Completed transactions</div>
+                    </div>
+
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Tickets Issued / Used</span>
+                        <div className="kpi-icon amber">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val">
+                        {adminStats?.total_tickets || 0} <span style={{ fontSize: '18px', color: 'var(--text-muted)' }}>/ {adminStats?.used_tickets || 0} used</span>
+                      </div>
+                      <div className="kpi-sub">Admission burn rate: {adminStats?.total_tickets ? Math.round(((adminStats.used_tickets || 0) / adminStats.total_tickets) * 100) : 0}%</div>
+                    </div>
+
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Active Holds</span>
+                        <div className="kpi-icon">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val">{adminStats?.active_reservations || 0}</div>
+                      <div className="kpi-sub">In-flight 10m TTL locks</div>
+                    </div>
+
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Registered Users</span>
+                        <div className="kpi-icon emerald">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val">{adminStats?.total_users || 0}</div>
+                      <div className="kpi-sub">Customer & staff accounts</div>
+                    </div>
+
+                    <div className="kpi-card">
+                      <div className="kpi-top">
+                        <span className="kpi-label">Kafka Outbox Sync</span>
+                        <div className="kpi-icon rose">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>
+                        </div>
+                      </div>
+                      <div className="kpi-val">{adminStats?.pending_outbox || 0} <span style={{ fontSize: '15px', color: 'var(--text-muted)' }}>pending</span></div>
+                      <div className="kpi-sub">Dual-write publisher health: OK</div>
+                    </div>
+                  </div>
+
+                  {/* Dual Grid: Recent Orders & Recent Tickets */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px', marginTop: '20px' }}>
+                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '16px', background: 'rgba(255,255,255,0.02)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <h4 style={{ fontSize: '14px', fontWeight: '700' }}>Recent Customer Orders</h4>
+                        <button className="btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }} onClick={() => setAdminSubTab('orders')}>View All →</button>
+                      </div>
+                      {adminOrders.length === 0 ? (
+                        <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No orders recorded yet.</p>
+                      ) : (
+                        <table className="data-table" style={{ fontSize: '13px' }}>
+                          <thead>
+                            <tr>
+                              <th>Customer</th>
+                              <th>Amount</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {adminOrders.slice(0, 5).map((o) => (
+                              <tr key={o.id}>
+                                <td>{o.customer_email}</td>
+                                <td><strong style={{ color: 'var(--emerald-light)' }}>¥{o.amount_yen.toLocaleString()}</strong></td>
+                                <td><span className="status-tag tag-valid">{o.status}</span></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+
+                    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '16px', background: 'rgba(255,255,255,0.02)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <h4 style={{ fontSize: '14px', fontWeight: '700' }}>Recent Ticket Passes</h4>
+                        <button className="btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }} onClick={() => setAdminSubTab('tickets')}>View All →</button>
+                      </div>
+                      {adminTickets.length === 0 ? (
+                        <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No tickets issued yet.</p>
+                      ) : (
+                        <table className="data-table" style={{ fontSize: '13px' }}>
+                          <thead>
+                            <tr>
+                              <th>Event</th>
+                              <th>Seat</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {adminTickets.slice(0, 5).map((t) => (
+                              <tr key={t.id}>
+                                <td>{t.event_title}</td>
+                                <td>{t.section}-{t.row}{t.number}</td>
+                                <td>
+                                  <span className={`status-tag ${t.status === 'valid' ? 'tag-valid' : 'tag-used'}`}>
+                                    {t.status.toUpperCase()}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SUBTAB 2: Event Catalog */}
+              {adminSubTab === 'events' && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: '700' }}>All Published Events</h3>
+                    <button className="btn-primary" onClick={() => setShowCreateModal(true)}>+ Publish New Event</button>
+                  </div>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Title</th>
+                        <th>Starts At</th>
+                        <th>Venue</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {events.map((ev) => (
+                        <tr key={ev.id}>
+                          <td><strong>{ev.title}</strong></td>
+                          <td>{new Date(ev.starts_at).toLocaleString()}</td>
+                          <td>TozaiTech Demo Hall, Tokyo</td>
+                          <td><span className="status-tag tag-valid">{ev.status.toUpperCase()}</span></td>
+                          <td>
+                            <button
+                              className="btn-secondary"
+                              style={{ fontSize: '12px', padding: '4px 12px' }}
+                              onClick={() => { selectEvent(ev); setActiveTab('events'); }}
+                            >
+                              Open Seating Plan →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* SUBTAB 3: Global Orders Audit */}
+              {adminSubTab === 'orders' && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: '700' }}>Global Orders Ledger</h3>
+                    <span className="system-pill">Showing latest {adminOrders.length} records</span>
+                  </div>
+                  {adminOrders.length === 0 ? (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>No orders found in the database.</p>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Order ID</th>
+                          <th>Customer</th>
+                          <th>Tickets</th>
+                          <th>Amount</th>
+                          <th>Status</th>
+                          <th>Placed At</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminOrders.map((o) => (
+                          <tr key={o.id}>
+                            <td><code>{o.id.slice(0, 8)}…{o.id.slice(-4)}</code></td>
+                            <td>{o.customer_email}</td>
+                            <td>{o.ticket_count} ticket{o.ticket_count === 1 ? '' : 's'}</td>
+                            <td><strong style={{ color: 'var(--emerald-light)' }}>¥{o.amount_yen.toLocaleString()}</strong></td>
+                            <td><span className="status-tag tag-valid">{o.status.toUpperCase()}</span></td>
+                            <td style={{ color: 'var(--text-dim)', fontSize: '13px' }}>{new Date(o.created_at).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* SUBTAB 4: Issued Tickets Audit */}
+              {adminSubTab === 'tickets' && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <div>
+                      <h3 style={{ fontSize: '16px', fontWeight: '700' }}>Master Tickets Audit & Admission Tracking</h3>
+                      <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Real-time status for all issued admissions across all events.</p>
+                    </div>
+                    <span className="system-pill">Showing latest {adminTickets.length} tickets</span>
+                  </div>
+                  {adminTickets.length === 0 ? (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>No tickets found in the database.</p>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Ticket ID</th>
+                          <th>Event</th>
+                          <th>Seat</th>
+                          <th>Status</th>
+                          <th>Issued At</th>
+                          <th>Admission At</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminTickets.map((t) => (
+                          <tr key={t.id}>
+                            <td><code>{t.id.slice(0, 8)}…{t.id.slice(-4)}</code></td>
+                            <td>{t.event_title}</td>
+                            <td><strong>{t.section} • Row {t.row} • #{t.number}</strong></td>
+                            <td>
+                              <span className={`status-tag ${t.status === 'valid' ? 'tag-valid' : 'tag-used'}`}>
+                                {t.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td style={{ color: 'var(--text-dim)', fontSize: '13px' }}>{new Date(t.created_at).toLocaleTimeString()}</td>
+                            <td style={{ color: 'var(--text-dim)', fontSize: '13px' }}>
+                              {t.used_at ? new Date(t.used_at).toLocaleTimeString() : 'Not Yet Used'}
+                            </td>
+                            <td>
+                              <button
+                                className="btn-secondary"
+                                style={{ fontSize: '11px', padding: '4px 10px' }}
+                                onClick={() => {
+                                  setActiveTab('checkin');
+                                }}
+                              >
+                                Go to Scanner →
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* SUBTAB 5: Cluster Topology */}
+              {adminSubTab === 'cluster' && (
+                <div>
+                  <div style={{ marginBottom: '20px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '700' }}>Distributed Multi-Node Architecture</h3>
+                    <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                      AWS ap-northeast-1 (Tokyo) production topology running live.
+                    </p>
+                  </div>
+
+                  <div className="cluster-grid">
+                    {/* Node 1 */}
+                    <div className="node-card">
+                      <div className="node-header">
+                        <div className="node-title">
+                          <span className="pulse-dot" />
+                          <span>Server 1 (App Node)</span>
+                        </div>
+                        <span className="status-tag tag-valid">HEALTHY</span>
+                      </div>
+                      <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        <div>Public IP: <code style={{ color: '#fff' }}>43.207.228.69</code></div>
+                        <div>Private IP: <code>172.31.18.194</code></div>
+                        <div>Instance: <code>i-0ba4b17c55a0a9166</code></div>
+                      </div>
+                      <div className="service-badge-list">
+                        <span className="service-chip active">Go HTTP API :8080</span>
+                        <span className="service-chip active">Next.js Web :3000</span>
+                        <span className="service-chip active">Nginx Proxy :80/:8088</span>
+                        <span className="service-chip active">Outbox Publisher</span>
+                        <span className="service-chip active">Reservation Expiry Worker</span>
+                        <span className="service-chip active">Notification Consumer</span>
+                      </div>
+                    </div>
+
+                    {/* Node 2 */}
+                    <div className="node-card">
+                      <div className="node-header">
+                        <div className="node-title">
+                          <span className="pulse-dot" />
+                          <span>Server 2 (Infra Node)</span>
+                        </div>
+                        <span className="status-tag tag-valid">HEALTHY</span>
+                      </div>
+                      <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        <div>Public IP: <code style={{ color: '#fff' }}>35.78.227.201</code></div>
+                        <div>Private IP: <code>172.31.30.95</code></div>
+                        <div>Instance: <code>i-07830db7e34f6f542</code></div>
+                      </div>
+                      <div className="service-badge-list">
+                        <span className="service-chip active">Apache Kafka KRaft 3.8.0 :9092</span>
+                        <span className="service-chip active">Redis 7.4-Alpine Cache :6379</span>
+                        <span className="service-chip">Topic: booking.confirmed</span>
+                        <span className="service-chip">Topic: reservation.created</span>
+                        <span className="service-chip">Topic: reservation.expired</span>
+                        <span className="service-chip">Topic: ticket.checked_in</span>
+                      </div>
+                    </div>
+
+                    {/* Neon Database */}
+                    <div className="node-card">
+                      <div className="node-header">
+                        <div className="node-title">
+                          <span className="pulse-dot" />
+                          <span>Neon PostgreSQL</span>
+                        </div>
+                        <span className="status-tag tag-valid">AUTHORITATIVE</span>
+                      </div>
+                      <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        <div>Engine: <code>PostgreSQL 16 Serverless</code></div>
+                        <div>Isolation: <code>Row-Level FOR UPDATE NOWAIT</code></div>
+                        <div>Pattern: <code>Transactional Outbox</code></div>
+                      </div>
+                      <div className="service-badge-list">
+                        <span className="service-chip active">pgcrypto (bcrypt)</span>
+                        <span className="service-chip active">Multi-seat atomic holds</span>
+                        <span className="service-chip active">Zero double-booking</span>
+                        <span className="service-chip active">Schema Migrations V1-V3</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </div>
       )}
 
       {/* Footer */}
